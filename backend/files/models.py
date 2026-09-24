@@ -61,6 +61,15 @@ class File(me.Document):
     created_at = me.DateTimeField(default=datetime.utcnow)
     updated_at = me.DateTimeField(default=datetime.utcnow)
     deleted = me.BooleanField(default=False)
+    
+    # Locking Mechanism Fields
+    is_locked = me.BooleanField(default=False)
+    lock_owner = me.ReferenceField(User, null=True, default=None)
+    lock_device_id = me.StringField(null=True, default=None)
+    lock_expires_at = me.DateTimeField(null=True, default=None)
+    
+    # Idempotency Tracking
+    last_operation_id = me.StringField(null=True, default=None)
 
     meta = {
         'collection': 'files',
@@ -81,5 +90,9 @@ class File(me.Document):
             "size": ver.size_bytes if ver else 0,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
-            "deleted": self.deleted
+            "deleted": self.deleted,
+            "is_locked": self.is_locked,
+            "lock_owner": str(self.lock_owner.id) if self.lock_owner else None,
+            "lock_device_id": self.lock_device_id,
+            "lock_expires_at": self.lock_expires_at.isoformat() if self.lock_expires_at else None
         }

@@ -7,6 +7,7 @@ from rest_framework.response import Response
 from rest_framework import status, permissions
 from files.models import File, FileVersion
 from files.crypto_utils import get_master_kek, decrypt_file_stream
+from files.lock_service import FileLockService
 
 class RevisionListView(APIView):
     permission_classes = [permissions.IsAuthenticated]
@@ -58,6 +59,10 @@ class RevisionRestoreView(APIView):
             file_record = File.objects.get(id=ObjectId(id), owner=request.user)
         except Exception:
             return Response({"error": "File not found", "code": "NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
+
+        device_id = request.headers.get('X-Device-Id') or request.data.get('device_id')
+        if not FileLockService.can_modify(file_record, request.user, device_id):
+            return Response({"error": "File is currently locked", "code": "FILE_LOCKED"}, status=status.HTTP_423_LOCKED)
 
         try:
             target_ver = FileVersion.objects.get(id=ObjectId(vid), file=file_record)

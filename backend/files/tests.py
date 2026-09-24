@@ -11,15 +11,36 @@ from files.models import File, Folder, FileVersion
 
 TEST_STORAGE_DIR = Path(tempfile.gettempdir()) / 'cloud_storage_test_files'
 
+from django.conf import settings
+from dotenv import load_dotenv
+
+load_dotenv(Path(settings.BASE_DIR) / '../.env')
+ENV_MONGO_URI = os.environ.get('MONGO_URI')
+if not ENV_MONGO_URI:
+    ENV_MONGO_URI = getattr(settings, 'MONGO_URI', 'mongodb://localhost:27017/cloud_storage_test_db')
+
+# Use a test db by appending /cloud_storage_test_db if it's localhost, or just use the atlas one.
+# For Atlas, we might just use the same cluster but a test database name.
+import urllib.parse
+parsed = urllib.parse.urlparse(ENV_MONGO_URI)
+if 'mongodb+srv' in ENV_MONGO_URI:
+    path_parts = parsed.path.split('/')
+    if len(path_parts) > 1:
+        path_parts[1] = 'cloud_storage_test_db'
+    parsed = parsed._replace(path="/".join(path_parts))
+    TEST_MONGO_URI = urllib.parse.urlunparse(parsed)
+else:
+    TEST_MONGO_URI = 'mongodb://localhost:27017/cloud_storage_test_db'
+
 @override_settings(
-    MONGO_URI='mongodb://localhost:27017/cloud_storage_test_db',
+    MONGO_URI=TEST_MONGO_URI,
     STORAGE_ROOT=TEST_STORAGE_DIR
 )
 class FilesAndEncryptionTestCase(TestCase):
     def setUp(self):
         TEST_STORAGE_DIR.mkdir(parents=True, exist_ok=True)
         me.disconnect()
-        me.connect('cloud_storage_test_db', host='mongodb://localhost:27017/cloud_storage_test_db')
+        me.connect(host=TEST_MONGO_URI)
         User.objects.delete()
         File.objects.delete()
         Folder.objects.delete()
@@ -132,3 +153,87 @@ class FilesAndEncryptionTestCase(TestCase):
         resp = self.client.post('/api/files/', {'file': big_file}, format='multipart')
         self.assertEqual(resp.status_code, 413)
         self.assertEqual(resp.data['code'], 'STORAGE_QUOTA_EXCEEDED')
+
+    def test_locking_mechanism(self):
+        """Test lock acquisition, enforcement, and release."""
+        # Create a file
+        content = b"Locking test"
+        f = SimpleUploadedFile("lock_test.txt", content)
+        resp = self.client.post('/api/files/', {'file': f}, format='multipart')
+        self.assertEqual(resp.status_code, 201)
+        file_id = resp.data['id']
+
+        # 1. Acquire lock
+        lock_resp = self.client.post(f'/api/files/{file_id}/lock/', {'device_id': 'dev123'}, format='json')
+        self.assertEqual(lock_resp.status_code, 200)
+        self.assertTrue(lock_resp.data['is_locked'])
+        self.assertEqual(lock_resp.data['lock_device_id'], 'dev123')
+
+        # 2. Try to update without device_id (simulating website edit)
+        update_f = SimpleUploadedFile("lock_test.txt", b"New content")
+        put_resp = self.client.put(f'/api/files/{file_id}/content/', {'file': update_f}, format='multipart')
+        self.assertEqual(put_resp.status_code, 423) # Locked
+
+        # 3. Try to update with wrong device_id (simulating another agent)
+        put_resp2 = self.client.put(
+            f'/api/files/{file_id}/content/', 
+            {'file': update_f, 'device_id': 'dev456'}, 
+            format='multipart'
+        )
+        self.assertEqual(put_resp2.status_code, 423)
+
+        # 4. Update with correct device_id
+        put_resp3 = self.client.put(
+            f'/api/files/{file_id}/content/', 
+            {'file': update_f, 'device_id': 'dev123'}, 
+            format='multipart'
+        )
+        self.assertEqual(put_resp3.status_code, 200)
+
+        # 5. Renew lock
+        renew_resp = self.client.post(f'/api/files/{file_id}/lock/renew/', {'device_id': 'dev123'}, format='json')
+        self.assertEqual(renew_resp.status_code, 200)
+
+        # 6. Unlock
+        unlock_resp = self.client.post(f'/api/files/{file_id}/unlock/', {'device_id': 'dev123'}, format='json')
+        self.assertEqual(unlock_resp.status_code, 200)
+        self.assertFalse(unlock_resp.data['is_locked'])
+
+        # 7. Update after unlock without device_id
+        put_resp4 = self.client.put(f'/api/files/{file_id}/content/', {'file': update_f}, format='multipart')
+        self.assertEqual(put_resp4.status_code, 200)
+
+    def test_version_conflict_and_idempotency(self):
+        """Test version matching and idempotent retries."""
+        f = SimpleUploadedFile("ver_test.txt", b"V1")
+        resp = self.client.post('/api/files/', {'file': f}, format='multipart')
+        file_id = resp.data['id']
+        self.assertEqual(resp.data['version_number'], 1)
+
+        # Update to V2
+        f2 = SimpleUploadedFile("ver_test.txt", b"V2")
+        put_resp = self.client.put(
+            f'/api/files/{file_id}/content/', 
+            {'file': f2, 'expected_version': 1, 'operation_id': 'op-1'}, 
+            format='multipart'
+        )
+        self.assertEqual(put_resp.status_code, 200)
+        self.assertEqual(put_resp.data['version_number'], 2)
+
+        # Retry with same operation_id (idempotent)
+        f2_retry = SimpleUploadedFile("ver_test.txt", b"V2")
+        retry_resp = self.client.put(
+            f'/api/files/{file_id}/content/', 
+            {'file': f2_retry, 'expected_version': 1, 'operation_id': 'op-1'}, 
+            format='multipart'
+        )
+        self.assertEqual(retry_resp.status_code, 200) # Should return 200, not 409
+
+        # Stale update (expecting v1, but it's v2) with new operation_id
+        f3 = SimpleUploadedFile("ver_test.txt", b"V3")
+        stale_resp = self.client.put(
+            f'/api/files/{file_id}/content/', 
+            {'file': f3, 'expected_version': 1, 'operation_id': 'op-2'}, 
+            format='multipart'
+        )
+        self.assertEqual(stale_resp.status_code, 409) # Conflict

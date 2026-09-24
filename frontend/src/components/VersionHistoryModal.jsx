@@ -40,6 +40,10 @@ const VersionHistoryModal = ({ file, onClose, onRestored }) => {
   };
 
   const handleRestoreRevision = async (rev) => {
+    if (file.is_locked) {
+      alert("This file is currently being edited on another device.");
+      return;
+    }
     if (!window.confirm(`Restore version ${rev.version_number} as current version?`)) return;
     try {
       await api.post(`/files/${file.id}/revisions/${rev.id}/restore/`);
@@ -47,7 +51,11 @@ const VersionHistoryModal = ({ file, onClose, onRestored }) => {
       if (onRestored) onRestored();
       onClose();
     } catch (e) {
-      alert("Failed to restore past revision");
+      if (e.response?.status === 423) {
+        alert("This file is currently being edited on another device.");
+      } else {
+        alert("Failed to restore past revision");
+      }
     }
   };
 
@@ -130,8 +138,9 @@ const VersionHistoryModal = ({ file, onClose, onRestored }) => {
                         <button
                           className="btn btn-primary"
                           onClick={() => handleRestoreRevision(rev)}
-                          title="Restore as current version"
-                          style={{ padding: '6px 12px' }}
+                          title={file.is_locked ? "Cannot restore while locked" : "Restore as current version"}
+                          style={{ padding: '6px 12px', opacity: file.is_locked ? 0.5 : 1, cursor: file.is_locked ? 'not-allowed' : 'pointer' }}
+                          disabled={file.is_locked}
                         >
                           <RotateCcw size={16} />
                           Restore

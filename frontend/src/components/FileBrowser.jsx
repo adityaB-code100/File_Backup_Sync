@@ -14,7 +14,8 @@ import {
   Move,
   ChevronRight,
   UploadCloud,
-  File as GenericFile
+  File as GenericFile,
+  Lock
 } from 'lucide-react';
 import api from '../services/api';
 import VersionHistoryModal from './VersionHistoryModal';
@@ -117,6 +118,10 @@ const FileBrowser = ({ searchQuery, viewMode, onRefreshStorage }) => {
 
   // Optimistic UI updates for Rename & Delete
   const handleRename = async (item) => {
+    if (item.is_locked) {
+      alert("This file is currently being edited on another device.");
+      return;
+    }
     const newName = prompt("Enter new name:", item.name);
     if (!newName || newName === item.name) return;
 
@@ -129,11 +134,20 @@ const FileBrowser = ({ searchQuery, viewMode, onRefreshStorage }) => {
       await api.patch(endpoint, { name: newName });
     } catch (e) {
       setItems(previousItems); // Rollback
-      alert("Failed to rename item.");
+      if (e.response?.status === 423) {
+        alert("This file is currently being edited on another device.");
+      } else {
+        alert("Failed to rename item.");
+      }
+      fetchItems(currentFolderId, searchQuery);
     }
   };
 
   const handleDelete = async (item) => {
+    if (item.is_locked) {
+      alert("This file is currently being edited on another device.");
+      return;
+    }
     if (!window.confirm(`Move "${item.name}" to trash?`)) return;
 
     // Optimistic update
@@ -146,8 +160,21 @@ const FileBrowser = ({ searchQuery, viewMode, onRefreshStorage }) => {
       if (onRefreshStorage) onRefreshStorage();
     } catch (e) {
       setItems(previousItems); // Rollback
-      alert("Failed to delete item.");
+      if (e.response?.status === 423) {
+        alert("This file is currently being edited on another device.");
+      } else {
+        alert("Failed to delete item.");
+      }
+      fetchItems(currentFolderId, searchQuery);
     }
+  };
+
+  const handleMoveClick = (item) => {
+    if (item.is_locked) {
+      alert("This file is currently being edited on another device.");
+      return;
+    }
+    setMoveModalItem(item);
   };
 
   const getFileIcon = (filename, type) => {
@@ -247,9 +274,16 @@ const FileBrowser = ({ searchQuery, viewMode, onRefreshStorage }) => {
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '16px' }}>
                   {getFileIcon(item.name, item.type)}
                   {item.type === 'file' && (
-                    <span className="hash-badge" title="v1 SHA-256">
-                      {item.content_hash ? item.content_hash.slice(0, 8) : 'File'}
-                    </span>
+                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '4px' }}>
+                      {item.is_locked && (
+                        <div title="Locked for editing" style={{ background: '#fee2e2', color: '#ef4444', padding: '2px 6px', borderRadius: '4px', display: 'flex', alignItems: 'center', fontSize: '0.75rem', fontWeight: 'bold' }}>
+                          <Lock size={12} style={{ marginRight: '4px' }}/> Locked
+                        </div>
+                      )}
+                      <span className="hash-badge" title={`v${item.version_number || 1} SHA-256`}>
+                        v{item.version_number || 1}
+                      </span>
+                    </div>
                   )}
                 </div>
                 <h4 style={{ fontSize: '0.95rem', fontWeight: '600', marginBottom: '6px', wordBreak: 'break-word' }}>
@@ -278,7 +312,7 @@ const FileBrowser = ({ searchQuery, viewMode, onRefreshStorage }) => {
                 <button className="btn btn-secondary" style={{ padding: '6px' }} title="Rename" onClick={() => handleRename(item)}>
                   <Edit2 size={15} />
                 </button>
-                <button className="btn btn-secondary" style={{ padding: '6px' }} title="Move" onClick={() => setMoveModalItem(item)}>
+                <button className="btn btn-secondary" style={{ padding: '6px' }} title="Move" onClick={() => handleMoveClick(item)}>
                   <Move size={15} />
                 </button>
                 <button className="btn btn-secondary" style={{ padding: '6px', color: 'var(--accent-rose)' }} title="Move to Trash" onClick={() => handleDelete(item)}>
@@ -301,7 +335,10 @@ const FileBrowser = ({ searchQuery, viewMode, onRefreshStorage }) => {
               <div style={{ display: 'flex', alignItems: 'center', gap: '16px', flex: 1 }}>
                 {getFileIcon(item.name, item.type)}
                 <div>
-                  <div style={{ fontWeight: '600', fontSize: '0.95rem' }}>{item.name}</div>
+                  <div style={{ fontWeight: '600', fontSize: '0.95rem', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    {item.name}
+                    {item.is_locked && <Lock size={14} color="#ef4444" title="Locked for editing" />}
+                  </div>
                   <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
                     Updated {new Date(item.updated_at || item.created_at).toLocaleDateString()}
                   </div>
@@ -314,8 +351,8 @@ const FileBrowser = ({ searchQuery, viewMode, onRefreshStorage }) => {
 
               {item.type === 'file' && (
                 <div style={{ width: '140px' }}>
-                  <span className="hash-badge" title="SHA-256 Hash">
-                    {item.content_hash ? item.content_hash.slice(0, 10) + '...' : ''}
+                  <span className="hash-badge" title="File Version">
+                    v{item.version_number || 1}
                   </span>
                 </div>
               )}
@@ -334,7 +371,7 @@ const FileBrowser = ({ searchQuery, viewMode, onRefreshStorage }) => {
                 <button className="btn btn-secondary" style={{ padding: '6px 10px' }} title="Rename" onClick={() => handleRename(item)}>
                   <Edit2 size={15} />
                 </button>
-                <button className="btn btn-secondary" style={{ padding: '6px 10px' }} title="Move" onClick={() => setMoveModalItem(item)}>
+                <button className="btn btn-secondary" style={{ padding: '6px 10px' }} title="Move" onClick={() => handleMoveClick(item)}>
                   <Move size={15} />
                 </button>
                 <button className="btn btn-secondary" style={{ padding: '6px 10px', color: 'var(--accent-rose)' }} title="Trash" onClick={() => handleDelete(item)}>

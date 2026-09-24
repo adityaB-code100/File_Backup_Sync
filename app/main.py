@@ -4,11 +4,17 @@ import queue
 import sys
 import threading
 import time
+import argparse
 
-from app import db
-from app.auth import get_drive_service
-from app.sync_engine import handle_local_change, poll_remote_changes, clean_orphaned_records
-from app.watcher import start_watcher
+import sys
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
+# from app 
+import db
+# from app.
+from auth import get_drive_service
+from sync_engine import handle_local_change, poll_remote_changes, clean_orphaned_records, acquire_lock_for_path
+from watcher import start_watcher
 
 logging.basicConfig(
     level=logging.INFO,
@@ -16,29 +22,28 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-WATCHED_DIR = os.path.abspath(sys.argv[1] if len(sys.argv) > 1 else "./synced_folder")
-
-def startup_reconciliation(service):
+def startup_reconciliation(auth, device_id: str, watched_dir: str):
     """Walk the folder once to process local changes, clean up orphaned DB records,
     and trigger initial remote cloud check."""
+    logger.info("→ startup reconciliation")
     logger.info("Starting startup reconciliation...")
-    os.makedirs(WATCHED_DIR, exist_ok=True)
-    for root, _, files in os.walk(WATCHED_DIR):
+    os.makedirs(watched_dir, exist_ok=True)
+    for root, _, files in os.walk(watched_dir):
         for name in files:
             path = os.path.join(root, name)
-            handle_local_change(service, path, WATCHED_DIR)
+            handle_local_change(auth, path, watched_dir, device_id)
 
-    clean_orphaned_records(WATCHED_DIR)
+    clean_orphaned_records(watched_dir)
     logger.info("Startup reconciliation complete.")
 
-def start_remote_polling_worker(service, interval_seconds: float = 30.0) -> threading.Event:
-    """Spawns a background thread that periodically polls Google Drive for cloud-side drift."""
+def start_remote_polling_worker(auth, watched_dir: str, interval_seconds: float = 30.0) -> threading.Event:
+    """Spawns a background thread that periodically polls VaultCloud for cloud-side drift."""
     stop_event = threading.Event()
 
     def _poll_loop():
         while not stop_event.is_set():
             try:
-                poll_remote_changes(service, WATCHED_DIR)
+                poll_remote_changes(auth, watched_dir)
             except Exception as e:
                 logger.error(f"Error during background cloud polling: {e}", exc_info=True)
             stop_event.wait(interval_seconds)
@@ -48,15 +53,32 @@ def start_remote_polling_worker(service, interval_seconds: float = 30.0) -> thre
     return stop_event
 
 def main():
-    logger.info(f"Watching directory: {WATCHED_DIR}")
-    db.init_db()
-    service = get_drive_service()
+    parser = argparse.ArgumentParser(description="Backup Sync Agent")
+    parser.add_argument("dir", nargs="?", default="./synced_folder", help="Directory to sync")
+    parser.add_argument("--email", help="VaultCloud account email")
+    parser.add_argument("--password", help="VaultCloud account password")
+    args = parser.parse_args()
 
-    startup_reconciliation(service)
+    watched_dir = os.path.abspath(args.dir)
+    logger.info(f"Watching directory: {watched_dir}")
+    db.init_db()
+    
+    device_id = db.get_device_id()
+    logger.info(f"Using Agent Device ID: {device_id}")
+    
+    auth = get_drive_service(email=args.email, password=args.password)
+    
+    logger.info("→ SyncEngine created")
+
+    startup_reconciliation(auth, device_id, watched_dir)
 
     event_queue: queue.Queue = queue.Queue()
-    observer = start_watcher(WATCHED_DIR, event_queue)
-    stop_polling = start_remote_polling_worker(service, interval_seconds=30.0)
+    
+    def on_start_editing(path: str):
+        acquire_lock_for_path(auth, path, watched_dir, device_id)
+        
+    observer = start_watcher(watched_dir, event_queue, on_start_editing=on_start_editing)
+    stop_polling = start_remote_polling_worker(auth, watched_dir, interval_seconds=30.0)
 
     try:
         while True:
@@ -70,7 +92,7 @@ def main():
             dest_path = event.get("dest_path")
 
             try:
-                handle_local_change(service, event_path, WATCHED_DIR, event_type=event_type, dest_path=dest_path)
+                handle_local_change(auth, event_path, watched_dir, device_id, event_type=event_type, dest_path=dest_path)
             except Exception as e:
                 logger.error(f"Unhandled error processing file event for '{event_path}' ({event_type}): {e}", exc_info=True)
     except KeyboardInterrupt:
@@ -80,4 +102,4 @@ def main():
     observer.join()
 
 if __name__ == "__main__":
-    main()
+    main()

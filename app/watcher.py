@@ -10,9 +10,10 @@ logger = logging.getLogger(__name__)
 class DebouncedHandler(FileSystemEventHandler):
     """Event handler that debounces events using a single background flusher thread
     instead of spawning a new threading.Timer thread per file event."""
-    def __init__(self, event_queue: queue.Queue, debounce_seconds: float = 1.0):
+    def __init__(self, event_queue: queue.Queue, debounce_seconds: float = 1.0, on_start_editing=None):
         self.event_queue = event_queue
         self.debounce_seconds = debounce_seconds
+        self.on_start_editing = on_start_editing
         self._pending = {}
         self._lock = threading.Lock()
         self._running = True
@@ -52,6 +53,13 @@ class DebouncedHandler(FileSystemEventHandler):
 
     def on_modified(self, event):
         if not event.is_directory:
+            with self._lock:
+                # If it's the first event for this path, trigger the editing callback to acquire locks
+                if event.src_path not in self._pending and self.on_start_editing:
+                    try:
+                        self.on_start_editing(event.src_path)
+                    except Exception as e:
+                        logger.error(f"Error in on_start_editing callback: {e}")
             self._schedule(event.src_path, "changed")
 
     def on_deleted(self, event):
@@ -62,8 +70,8 @@ class DebouncedHandler(FileSystemEventHandler):
         if not event.is_directory:
             self._schedule(event.src_path, "moved", dest_path=event.dest_path)
 
-def start_watcher(watched_dir: str, event_queue: queue.Queue) -> Observer:
-    handler = DebouncedHandler(event_queue)
+def start_watcher(watched_dir: str, event_queue: queue.Queue, on_start_editing=None) -> Observer:
+    handler = DebouncedHandler(event_queue, on_start_editing=on_start_editing)
     observer = Observer()
     observer.schedule(handler, watched_dir, recursive=True)
     observer.start()

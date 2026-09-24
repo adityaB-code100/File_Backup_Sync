@@ -16,6 +16,7 @@ from files.crypto_utils import (
     decrypt_file_stream
 )
 import mongoengine as me
+from files.lock_service import FileLockService
 
 class UploadRateThrottle(UserRateThrottle):
     scope = 'uploads'
@@ -198,6 +199,10 @@ class FileDetailView(APIView):
         except Exception:
             return Response({"error": "File not found", "code": "NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
 
+        device_id = request.headers.get('X-Device-Id') or request.data.get('device_id')
+        if not FileLockService.can_modify(file_record, request.user, device_id):
+            return Response({"error": "File is currently locked", "code": "FILE_LOCKED"}, status=status.HTTP_423_LOCKED)
+
         if 'name' in request.data:
             new_name = request.data['name'].strip()
             if new_name:
@@ -219,6 +224,10 @@ class FileDetailView(APIView):
         """Soft-delete file (move to trash)."""
         try:
             file_record = File.objects.get(id=ObjectId(id), owner=request.user)
+            device_id = request.headers.get('X-Device-Id') or request.data.get('device_id')
+            if not FileLockService.can_modify(file_record, request.user, device_id):
+                return Response({"error": "File is currently locked", "code": "FILE_LOCKED"}, status=status.HTTP_423_LOCKED)
+                
             file_record.deleted = True
             file_record.updated_at = datetime.utcnow()
             file_record.save()
@@ -233,6 +242,10 @@ class FileRestoreView(APIView):
         """Restore soft-deleted file from trash."""
         try:
             file_record = File.objects.get(id=ObjectId(id), owner=request.user)
+            device_id = request.headers.get('X-Device-Id') or request.data.get('device_id')
+            if not FileLockService.can_modify(file_record, request.user, device_id):
+                return Response({"error": "File is currently locked", "code": "FILE_LOCKED"}, status=status.HTTP_423_LOCKED)
+                
             file_record.deleted = False
             file_record.updated_at = datetime.utcnow()
             file_record.save()
@@ -247,6 +260,10 @@ class FilePermanentDeleteView(APIView):
         """Permanently delete file."""
         try:
             file_record = File.objects.get(id=ObjectId(id), owner=request.user)
+            device_id = request.headers.get('X-Device-Id') or request.data.get('device_id')
+            if not FileLockService.can_modify(file_record, request.user, device_id):
+                return Response({"error": "File is currently locked", "code": "FILE_LOCKED"}, status=status.HTTP_423_LOCKED)
+                
             # Delete file versions
             FileVersion.objects(file=file_record).delete()
             file_record.delete()
@@ -289,6 +306,21 @@ class FileContentView(APIView):
             file_record = File.objects.get(id=ObjectId(id), owner=user)
         except Exception:
             return Response({"error": "File not found", "code": "NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
+
+        device_id = request.headers.get('X-Device-Id') or request.data.get('device_id')
+        if not FileLockService.can_modify(file_record, request.user, device_id):
+            return Response({"error": "File is currently locked", "code": "FILE_LOCKED"}, status=status.HTTP_423_LOCKED)
+            
+        operation_id = request.data.get('operation_id')
+        if operation_id and file_record.last_operation_id == operation_id:
+            # Idempotent retry hit! Just return the current state
+            return Response(file_record.to_dict(), status=status.HTTP_200_OK)
+
+        expected_version = request.data.get('expected_version')
+        if expected_version is not None:
+            current_version = file_record.current_version.version_number if file_record.current_version else 0
+            if int(expected_version) != current_version:
+                return Response({"error": "Version conflict", "code": "CONFLICT"}, status=status.HTTP_409_CONFLICT)
 
         file_obj = request.FILES.get('file') or request.body
         if not file_obj:
@@ -347,6 +379,8 @@ class FileContentView(APIView):
 
         file_record.current_version = ver_record
         file_record.updated_at = datetime.utcnow()
+        if operation_id:
+            file_record.last_operation_id = operation_id
         file_record.save()
 
         return Response(file_record.to_dict(), status=status.HTTP_200_OK)
