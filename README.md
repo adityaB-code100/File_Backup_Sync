@@ -83,10 +83,36 @@ For complete details on API endpoints, request/response schemas, status codes, a
 
 ---
 
+## 🚀 Production Deployment
+
+This project is built for standard, easily-deployable platforms.
+
+### Backend (Render / Heroku / DigitalOcean)
+The backend is a standard Django application with a `Procfile` utilizing `gunicorn`.
+
+1. Deploy the `backend/` directory to a PAAS like **Render** or **Heroku**.
+2. **Environment Variables**: You MUST set all variables in the deployment dashboard rather than uploading a `.env` file.
+   - Set `ALLOWED_HOSTS` to your production domain (e.g., `api.yourdomain.com`).
+   - Set `CORS_ALLOWED_ORIGINS` to your frontend domain (e.g., `https://drive.yourdomain.com`).
+   - Set `MONGO_URI` to your MongoDB Atlas production connection string.
+3. The platform will automatically run `pip install -r requirements.txt` and start the app via the `Procfile`.
+
+### Frontend (Vercel / Netlify)
+The frontend is a standard Vite React app.
+1. Connect your repository to **Vercel** or **Netlify** and set the root directory to `frontend/`.
+2. Ensure the build command is `npm run build` and output directory is `dist/`.
+3. Add the `VITE_API_BASE_URL` environment variable pointing to your deployed backend (e.g., `https://api.yourdomain.com/api`).
+
+---
+
 ## 🛡️ Environment & Security
 
-Ensure `.env` files are never committed to version control. Set environment secrets in `backend/.env`:
-- `MONGO_URI`
-- `SECRET_KEY`
-- `JWT_SIGNING_KEY`
-- `FILE_ENCRYPTION_KEK` (32-byte Base64 key)
+> **⚠️ CRITICAL:** Ensure `.env` files are NEVER committed to version control. They contain highly sensitive cryptographic keys that cannot be rotated without losing access to encrypted files. The repository includes a `.gitignore` that ignores all `*.env` files by default.
+
+Set environment secrets in `backend/.env` for local development, or in your hosting provider's dashboard for production:
+- `MONGO_URI`: Your MongoDB Atlas connection string.
+- `SECRET_KEY`: A highly secure random string for Django's cryptographic signing.
+- `JWT_SIGNING_KEY`: Used to sign authentication tokens.
+- `FILE_ENCRYPTION_KEK`: (32-byte Base64 key) The **Key Encryption Key** used to wrap all file Data Encryption Keys. If this key is lost or compromised, all files become unrecoverable. 
+- `ALLOWED_HOSTS`: Comma-separated list of allowed domains in production.
+- `CORS_ALLOWED_ORIGINS`: Comma-separated list of allowed frontend origins in production.
