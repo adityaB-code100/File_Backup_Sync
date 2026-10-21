@@ -78,6 +78,9 @@ class File(me.Document):
 
     def to_dict(self):
         ver = self.current_version
+        now = datetime.utcnow()
+        active_lock = self.is_locked and (self.lock_expires_at is None or self.lock_expires_at > now)
+        
         return {
             "id": str(self.id),
             "name": self.name,
@@ -91,8 +94,8 @@ class File(me.Document):
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
             "deleted": self.deleted,
-            "is_locked": self.is_locked,
-            "lock_owner": str(self.lock_owner.id) if self.lock_owner else None,
-            "lock_device_id": self.lock_device_id,
-            "lock_expires_at": self.lock_expires_at.isoformat() if self.lock_expires_at else None
+            "is_locked": active_lock,
+            "lock_owner": str(self.lock_owner.id) if (active_lock and self.lock_owner) else None,
+            "lock_device_id": self.lock_device_id if active_lock else None,
+            "lock_expires_at": self.lock_expires_at.isoformat() if (active_lock and self.lock_expires_at) else None
         }

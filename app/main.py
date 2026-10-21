@@ -67,6 +67,43 @@ def main():
     logger.info(f"Using Agent Device ID: {device_id}")
     
     auth = get_drive_service(email=args.email, password=args.password)
+    user_info = auth.get_current_user()
+    if not user_info:
+        logger.error("FATAL: Failed to obtain authenticated user profile from /api/auth/me/. Exiting.")
+        sys.exit(1)
+
+    auth_user_id = str(user_info.get("id"))
+    auth_email = user_info.get("email")
+
+    logger.info("=================================================================")
+    logger.info(f"  ACTIVE VAULTCLOUD ACCOUNT: {auth_email} (ID: {auth_user_id})")
+    logger.info("=================================================================")
+
+    # Enforce desktop account isolation
+    sync_user = db.get_sync_user()
+    if sync_user and sync_user.get("user_id"):
+        bound_id = sync_user.get("user_id")
+        bound_email = sync_user.get("email", "unknown")
+        if bound_id != auth_user_id:
+            logger.error("=================================================================")
+            logger.error("FATAL: ACCOUNT MISMATCH DETECTED!")
+            logger.error(f"  Local sync state is bound to account: '{bound_email}' (ID: {bound_id})")
+            logger.error(f"  Current active authentication is:    '{auth_email}' (ID: {auth_user_id})")
+            logger.error("-----------------------------------------------------------------")
+            logger.error("To switch accounts safely without corrupting sync state:")
+            logger.error(f"  1. Specify a different local sync directory for this account:")
+            logger.error(f"     python -m app.main ./synced_{auth_email.split('@')[0]} --email {auth_email} --password <pwd>")
+            logger.error("  2. OR, if you wish to start fresh with this account, back up and")
+            logger.error("     remove app/sync_state.db before restarting.")
+            logger.error("=================================================================")
+            sys.exit(1)
+        else:
+            db.set_sync_user(auth_user_id, auth_email)
+    else:
+        existing_records = db.all_records()
+        if existing_records:
+            logger.info(f"Binding existing local sync database ({len(existing_records)} records) to account: {auth_email}")
+        db.set_sync_user(auth_user_id, auth_email)
     
     logger.info("→ SyncEngine created")
 

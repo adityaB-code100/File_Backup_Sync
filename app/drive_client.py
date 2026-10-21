@@ -117,6 +117,17 @@ def get_or_create_drive_folder(auth, relative_dir_path: str, parent_id: str = "r
     return current_parent
 
 @_retry_policy
+def find_drive_file(auth, filename: str, parent_id: str = "root") -> dict | None:
+    """Checks if an active (non-deleted) file with the given name already exists in the given parent folder on VaultCloud."""
+    params = {"parent_id": parent_id or "root", "q": filename}
+    resp = _api_request(auth, "GET", "/files/", params=params)
+    results = resp.json().get("results", [])
+    for item in results:
+        if item.get("type") == "file" and item.get("name") == filename and not item.get("deleted", False):
+            return item
+    return None
+
+@_retry_policy
 def upload_file(auth, local_path: str, cloud_id: str = None, parent_id: str = None, expected_version: int = None, operation_id: str = None, device_id: str = None) -> dict:
     """Creates a new file, or updates an existing one if cloud_id is given.
     Returns the file metadata dict."""
@@ -144,6 +155,10 @@ def upload_file(auth, local_path: str, cloud_id: str = None, parent_id: str = No
             data = {"name": filename}
             if parent_id:
                 data["parent_id"] = parent_id
+            if operation_id is not None:
+                data["operation_id"] = operation_id
+            if device_id is not None:
+                data["device_id"] = device_id
             resp = _api_request(
                 auth, "POST", "/files/", 
                 files={"file": (filename, f)},

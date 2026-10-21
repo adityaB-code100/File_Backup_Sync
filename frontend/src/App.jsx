@@ -45,6 +45,7 @@ const MainLayout = () => {
     for (let i = 0; i < files.length; i++) {
       const formData = new FormData();
       formData.append('file', files[i]);
+      formData.append('operation_id', crypto.randomUUID());
       try {
         await api.post('/files/', formData, {
           headers: { 'Content-Type': 'multipart/form-data' },

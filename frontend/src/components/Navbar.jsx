@@ -1,7 +1,10 @@
 import React from 'react';
-import { Search, FolderPlus, Upload, Grid, List } from 'lucide-react';
+import { Search, FolderPlus, Upload, Grid, List, User as UserIcon } from 'lucide-react';
+import { useAuth } from '../context/AuthContext';
 
 const Navbar = ({ searchQuery, setSearchQuery, viewMode, setViewMode, onNewFolder, onUpload }) => {
+  const { user } = useAuth();
+
   return (
     <header className="navbar">
       {/* Search Input */}
@@ -17,8 +20,32 @@ const Navbar = ({ searchQuery, setSearchQuery, viewMode, setViewMode, onNewFolde
         />
       </div>
 
-      {/* Action Controls */}
+      {/* Action Controls & Active Account */}
       <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+        {/* Active Authenticated Account Pill */}
+        {user?.email && (
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px',
+              background: 'rgba(255, 255, 255, 0.05)',
+              border: '1px solid var(--border-color)',
+              borderRadius: '20px',
+              padding: '6px 14px',
+              fontSize: '0.85rem',
+              color: 'var(--text-main)',
+              fontWeight: '500'
+            }}
+            title={`Active Account: ${user.email} (ID: ${user.id})`}
+          >
+            <UserIcon size={14} color="var(--primary)" />
+            <span style={{ maxWidth: '180px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {user.email}
+            </span>
+          </div>
+        )}
+
         {/* Grid/List View Toggle */}
         <div style={{ display: 'flex', background: 'var(--bg-input)', padding: '4px', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
           <button

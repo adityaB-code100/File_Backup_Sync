@@ -1,0 +1,48 @@
+import time
+import uuid
+import logging
+
+logger = logging.getLogger("cloud_storage.request")
+
+class RequestLoggingMiddleware:
+    """
+    Structured API request logging middleware.
+    Logs HTTP method, endpoint, status code, duration, correlation ID,
+    and authenticated user identity without exposing credentials, JWTs, or keys.
+    """
+    def __init__(self, get_response):
+        self.get_response = get_response
+
+    def __call__(self, request):
+        correlation_id = request.headers.get("X-Correlation-ID") or request.headers.get("X-Request-ID") or uuid.uuid4().hex[:8]
+        request.correlation_id = correlation_id
+        start_time = time.perf_counter()
+
+        response = self.get_response(request)
+
+        duration_ms = (time.perf_counter() - start_time) * 1000
+
+        # Safe extraction of user representation
+        user_repr = "anonymous"
+        user = getattr(request, "user", None)
+        if user and getattr(user, "is_authenticated", False):
+            user_repr = getattr(user, "email", str(getattr(user, "id", "authenticated")))
+
+        device_id = request.headers.get("X-Device-Id")
+        device_suffix = f" [Device: {device_id}]" if device_id else ""
+
+        status_code = response.status_code
+        log_msg = (
+            f"[{correlation_id}] {request.method} {request.get_full_path()} "
+            f"-> {status_code} ({duration_ms:.1f}ms) [User: {user_repr}]{device_suffix}"
+        )
+
+        if status_code >= 500:
+            logger.error(log_msg)
+        elif status_code >= 400:
+            logger.warning(log_msg)
+        else:
+            logger.info(log_msg)
+
+        response["X-Correlation-ID"] = correlation_id
+        return response

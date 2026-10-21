@@ -1,0 +1,339 @@
+import os
+import sys
+import threading
+import queue
+import time
+import subprocess
+from pathlib import Path
+import tkinter as tk
+from tkinter import ttk, filedialog, messagebox
+import logging
+
+# Ensure app package is importable
+APP_DIR = Path(__file__).resolve().parent
+if str(APP_DIR) not in sys.path:
+    sys.path.insert(0, str(APP_DIR))
+PROJECT_ROOT = APP_DIR.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+import db
+import auth
+import drive_client
+
+logger = logging.getLogger("vaultcloud.gui")
+
+class VaultCloudGUI(tk.Tk):
+    def __init__(self):
+        super().__init__()
+        self.title("VaultCloud — Desktop Sync Agent")
+        self.geometry("720x620")
+        self.minsize(640, 520)
+
+        # Style configuration
+        self.style = ttk.Style(self)
+        try:
+            self.style.theme_use("clam")
+        except Exception:
+            pass
+
+        self.style.configure("Header.TLabel", font=("Segoe UI", 12, "bold"))
+        self.style.configure("SubHeader.TLabel", font=("Segoe UI", 9))
+        self.style.configure("Primary.TButton", font=("Segoe UI", 9, "bold"))
+        self.style.configure("Status.TLabel", font=("Segoe UI", 9, "italic"))
+
+        self.drive_auth = None
+        self.current_user = None
+        self.device_id = None
+        self.selected_file_path = None
+        self.log_queue = queue.Queue()
+
+        self._init_database()
+        self._build_ui()
+        self._check_initial_auth()
+        self.after(100, self._process_log_queue)
+
+    def _init_database(self):
+        try:
+            db.init_db()
+            self.device_id = db.get_device_id()
+        except Exception as e:
+            logger.error(f"DB init failed: {e}")
+            self.device_id = "unknown"
+
+    def _log(self, message: str, level: str = "INFO"):
+        timestamp = time.strftime("%H:%M:%S")
+        self.log_queue.put(f"[{timestamp}] [{level}] {message}")
+
+    def _process_log_queue(self):
+        while not self.log_queue.empty():
+            msg = self.log_queue.get_nowait()
+            self.log_text.config(state=tk.NORMAL)
+            self.log_text.insert(tk.END, msg + "\n")
+            self.log_text.see(tk.END)
+            self.log_text.config(state=tk.DISABLED)
+        self.after(100, self._process_log_queue)
+
+    def _build_ui(self):
+        # Top banner: Account & Status
+        self.banner_frame = ttk.Frame(self, padding="12 12 12 6")
+        self.banner_frame.pack(fill=tk.X)
+
+        self.account_label = ttk.Label(self.banner_frame, text="Active Account: Initializing...", style="Header.TLabel")
+        self.account_label.pack(side=tk.LEFT)
+
+        self.logout_btn = ttk.Button(self.banner_frame, text="Switch Account", command=self._on_logout)
+        self.logout_btn.pack(side=tk.RIGHT)
+
+        self.device_label = ttk.Label(self, text=f"Device ID: {self.device_id}", style="SubHeader.TLabel", foreground="#666666")
+        self.device_label.pack(fill=tk.X, padx=12, pady=(0, 8))
+
+        # Main separator
+        ttk.Separator(self, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=12, pady=4)
+
+        # File Selection Frame
+        self.file_frame = ttk.LabelFrame(self, text=" Local File Operations ", padding=12)
+        self.file_frame.pack(fill=tk.X, padx=12, pady=8)
+
+        file_btn_frame = ttk.Frame(self.file_frame)
+        file_btn_frame.pack(fill=tk.X, pady=(0, 6))
+
+        self.pick_file_btn = ttk.Button(file_btn_frame, text="Choose File...", command=self._pick_file)
+        self.pick_file_btn.pack(side=tk.LEFT, padx=(0, 8))
+
+        self.open_file_btn = ttk.Button(file_btn_frame, text="Open Local File", command=self._open_local_file, state=tk.DISABLED)
+        self.open_file_btn.pack(side=tk.LEFT, padx=(0, 8))
+
+        self.open_dir_btn = ttk.Button(file_btn_frame, text="Show in Explorer", command=self._open_containing_folder, state=tk.DISABLED)
+        self.open_dir_btn.pack(side=tk.LEFT)
+
+        # Path display entry
+        self.path_var = tk.StringVar(value="No file selected.")
+        self.path_entry = ttk.Entry(self.file_frame, textvariable=self.path_var, state="readonly", font=("Consolas", 9))
+        self.path_entry.pack(fill=tk.X, pady=(0, 8))
+
+        # Upload controls
+        upload_ctrl_frame = ttk.Frame(self.file_frame)
+        upload_ctrl_frame.pack(fill=tk.X)
+
+        self.upload_btn = ttk.Button(upload_ctrl_frame, text="Upload to VaultCloud", style="Primary.TButton", command=self._start_upload, state=tk.DISABLED)
+        self.upload_btn.pack(side=tk.LEFT, padx=(0, 12))
+
+        self.progress_bar = ttk.Progressbar(upload_ctrl_frame, mode="indeterminate", length=200)
+        self.status_var = tk.StringVar(value="Ready")
+        self.status_lbl = ttk.Label(upload_ctrl_frame, textvariable=self.status_var, style="Status.TLabel")
+        self.status_lbl.pack(side=tk.LEFT)
+
+        # Activity Log Section
+        self.log_frame = ttk.LabelFrame(self, text=" Activity Log ", padding=10)
+        self.log_frame.pack(fill=tk.BOTH, expand=True, padx=12, pady=(4, 12))
+
+        self.log_text = tk.Text(self.log_frame, wrap=tk.WORD, font=("Consolas", 9), state=tk.DISABLED, bg="#1e1e1e", fg="#d4d4d4")
+        self.log_scroll = ttk.Scrollbar(self.log_frame, orient=tk.VERTICAL, command=self.log_text.yview)
+        self.log_text.configure(yscrollcommand=self.log_scroll.set)
+
+        self.log_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        self.log_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+    def _check_initial_auth(self):
+        def _bg_check():
+            try:
+                self.drive_auth = auth.get_drive_service()
+                user = self.drive_auth.get_current_user()
+                if user:
+                    self.current_user = user
+                    email = user.get("email", "Authenticated")
+                    uid = user.get("id", "")
+                    db.set_sync_user(str(uid), email)
+                    self.after(0, lambda: self._on_auth_success(email, str(uid)))
+                else:
+                    self.after(0, self._show_login_modal)
+            except Exception as e:
+                self._log(f"Authentication check: {e}", "WARNING")
+                self.after(0, self._show_login_modal)
+
+        threading.Thread(target=_bg_check, daemon=True).start()
+
+    def _on_auth_success(self, email: str, uid: str):
+        self.account_label.config(text=f"Active Account: {email}", foreground="#2e7d32")
+        self._log(f"Successfully authenticated as {email} (ID: {uid})")
+        self._log("Ready for sync and upload operations.")
+
+    def _show_login_modal(self):
+        modal = tk.Toplevel(self)
+        modal.title("VaultCloud Login")
+        modal.geometry("380x260")
+        modal.resizable(False, False)
+        modal.grab_set()
+
+        ttk.Label(modal, text="Sign In to VaultCloud", font=("Segoe UI", 11, "bold")).pack(pady=(16, 12))
+
+        form = ttk.Frame(modal, padding=16)
+        form.pack(fill=tk.BOTH, expand=True)
+
+        ttk.Label(form, text="Email:").grid(row=0, column=0, sticky=tk.W, pady=6)
+        email_entry = ttk.Entry(form, width=30)
+        email_entry.grid(row=0, column=1, pady=6)
+        email_entry.focus()
+
+        # Prefill default email if credentials exist
+        creds_path = auth.CANONICAL_CREDS_PATH
+        if os.path.exists(creds_path):
+            try:
+                import json
+                with open(creds_path) as f:
+                    c = json.load(f)
+                    if c.get("email"):
+                        email_entry.insert(0, c["email"])
+            except Exception:
+                pass
+
+        ttk.Label(form, text="Password:").grid(row=1, column=0, sticky=tk.W, pady=6)
+        pwd_entry = ttk.Entry(form, show="*", width=30)
+        pwd_entry.grid(row=1, column=1, pady=6)
+
+        err_lbl = ttk.Label(form, text="", foreground="red", font=("Segoe UI", 8))
+        err_lbl.grid(row=2, column=0, columnspan=2, pady=4)
+
+        def _do_login():
+            em = email_entry.get().strip()
+            pw = pwd_entry.get()
+            if not em or not pw:
+                err_lbl.config(text="Please provide email and password.")
+                return
+
+            err_lbl.config(text="Authenticating...", foreground="#555555")
+            def _bg():
+                try:
+                    srv = auth.get_drive_service(email=em, password=pw)
+                    u = srv.get_current_user()
+                    if u:
+                        self.drive_auth = srv
+                        self.current_user = u
+                        db.set_sync_user(str(u["id"]), u["email"])
+                        modal.after(0, modal.destroy)
+                        self.after(0, lambda: self._on_auth_success(u["email"], str(u["id"])))
+                    else:
+                        modal.after(0, lambda: err_lbl.config(text="Login failed. Check credentials.", foreground="red"))
+                except Exception as e:
+                    modal.after(0, lambda: err_lbl.config(text=f"Error: {e}", foreground="red"))
+
+            threading.Thread(target=_bg, daemon=True).start()
+
+        ttk.Button(form, text="Sign In", command=_do_login, style="Primary.TButton").grid(row=3, column=0, columnspan=2, pady=12)
+
+    def _on_logout(self):
+        confirm = messagebox.askyesno(
+            "Switch Account",
+            "Are you sure you want to log out of the current account?\nYour local files will remain safe."
+        )
+        if confirm:
+            try:
+                if os.path.exists(auth.CANONICAL_TOKEN_PATH):
+                    os.remove(auth.CANONICAL_TOKEN_PATH)
+                self.current_user = None
+                self.drive_auth = None
+                self.account_label.config(text="Active Account: Logged Out", foreground="#888888")
+                self._log("Logged out of session. Please sign in with desired account.")
+                self._show_login_modal()
+            except Exception as e:
+                messagebox.showerror("Logout Error", str(e))
+
+    def _pick_file(self):
+        chosen = filedialog.askopenfilename(title="Select File to Upload")
+        if chosen:
+            self.selected_file_path = os.path.abspath(chosen)
+            self.path_var.set(self.selected_file_path)
+            size_kb = round(os.path.getsize(self.selected_file_path) / 1024, 1)
+            self.status_var.set(f"Selected: {os.path.basename(self.selected_file_path)} ({size_kb} KB)")
+            self.open_file_btn.config(state=tk.NORMAL)
+            self.open_dir_btn.config(state=tk.NORMAL)
+            self.upload_btn.config(state=tk.NORMAL)
+            self._log(f"Selected file: {self.selected_file_path} ({size_kb} KB)")
+
+    def _open_local_file(self):
+        if self.selected_file_path and os.path.exists(self.selected_file_path):
+            try:
+                os.startfile(self.selected_file_path)
+            except Exception as e:
+                messagebox.showerror("Open File Error", str(e))
+
+    def _open_containing_folder(self):
+        if self.selected_file_path and os.path.exists(self.selected_file_path):
+            try:
+                folder = os.path.dirname(self.selected_file_path)
+                subprocess.Popen(f'explorer /select,"{self.selected_file_path}"')
+            except Exception as e:
+                messagebox.showerror("Open Explorer Error", str(e))
+
+    def _start_upload(self):
+        if not self.selected_file_path or not os.path.exists(self.selected_file_path):
+            messagebox.showwarning("Warning", "Please select a valid local file first.")
+            return
+
+        if not self.drive_auth:
+            messagebox.showerror("Error", "Not authenticated. Please sign in.")
+            return
+
+        self.upload_btn.config(state=tk.DISABLED)
+        self.pick_file_btn.config(state=tk.DISABLED)
+        self.progress_bar.pack(side=tk.LEFT, padx=(0, 12))
+        self.progress_bar.start(10)
+        self.status_var.set("Uploading & encrypting...")
+
+        filepath = self.selected_file_path
+        filename = os.path.basename(filepath)
+
+        def _bg_upload():
+            import uuid
+            op_id = str(uuid.uuid4())
+            try:
+                self._log(f"Starting upload for '{filename}' (op_id: {op_id[:8]})...")
+                resp = drive_client.upload_file(
+                    self.drive_auth,
+                    filepath,
+                    parent_id="root",
+                    operation_id=op_id,
+                    device_id=self.device_id
+                )
+                cloud_id = resp.get("id")
+                ver = resp.get("version_number", 1)
+                content_hash = resp.get("content_hash", "")
+                hash_short = content_hash[:16] + "..." if content_hash else "verified"
+                
+                # Update SQLite tracking record
+                h = drive_client.hash_file(filepath)
+                db.upsert_record(
+                    filename,
+                    local_hash=h,
+                    cloud_id=cloud_id,
+                    last_synced_hash=h,
+                    last_synced_cloud_md5=content_hash,
+                    cloud_version=ver
+                )
+
+                self._log(f"Upload SUCCESS: '{filename}' (Cloud ID: {cloud_id}, Version: {ver}, Hash: {hash_short})")
+                self.after(0, lambda: self._on_upload_finished(f"Success! Cloud ID: {cloud_id}"))
+            except Exception as e:
+                self._log(f"Upload FAILED for '{filename}': {e}", "ERROR")
+                self.after(0, lambda: self._on_upload_finished(f"Failed: {e}", is_error=True))
+
+        threading.Thread(target=_bg_upload, daemon=True).start()
+
+    def _on_upload_finished(self, status_msg: str, is_error: bool = False):
+        self.progress_bar.stop()
+        self.progress_bar.pack_forget()
+        self.status_var.set(status_msg)
+        self.upload_btn.config(state=tk.NORMAL)
+        self.pick_file_btn.config(state=tk.NORMAL)
+        if is_error:
+            messagebox.showerror("Upload Status", status_msg)
+        else:
+            messagebox.showinfo("Upload Complete", status_msg)
+
+def main():
+    app = VaultCloudGUI()
+    app.mainloop()
+
+if __name__ == "__main__":
+    main()

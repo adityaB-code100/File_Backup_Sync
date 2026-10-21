@@ -29,6 +29,7 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
+    'cloud_storage.middleware.RequestLoggingMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'django.middleware.common.CommonMiddleware',
 ]
@@ -57,15 +58,19 @@ PASSWORD_HASHERS = [
 ]
 
 LANGUAGE_CODE = 'en-us'
-TIME_ZONE = 'UTC'
+
+TIME_ZONE = 'Asia/Kolkata'
+
 USE_I18N = True
 USE_TZ = True
-
 STATIC_URL = 'static/'
 
 # Storage Root
 STORAGE_ROOT = Path(os.getenv('STORAGE_ROOT', BASE_DIR / 'file_storage')).resolve()
 STORAGE_ROOT.mkdir(parents=True, exist_ok=True)
+
+# Secondary Encrypted Backup Root
+SECONDARY_BACKUP_ROOT = Path(os.getenv('SECONDARY_BACKUP_ROOT', r'D:\VaultCloudBackup')).resolve()
 
 # REST Framework Configuration
 REST_FRAMEWORK = {
@@ -109,6 +114,7 @@ if not CORS_ALLOW_ALL_ORIGINS:
         origin.strip() for origin in os.getenv('CORS_ALLOWED_ORIGINS', 'http://localhost:5173').split(',') if origin.strip()
     ]
 CORS_ALLOW_CREDENTIALS = True
+CORS_EXPOSE_HEADERS = ['Content-Type', 'X-Correlation-ID']
 
 # Security Settings for Production (HTTPS/TLS)
 if not DEBUG:
@@ -116,3 +122,53 @@ if not DEBUG:
     SESSION_COOKIE_SECURE = True
     CSRF_COOKIE_SECURE = True
     SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+
+    "formatters": {
+        "verbose": {
+            "format": "{asctime} [{levelname}] {name}: {message}",
+            "style": "{",
+        },
+    },
+
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+            "formatter": "verbose",
+        },
+    },
+
+    "loggers": {
+        # HTTP requests and Django request errors
+        "django.request": {
+            "handlers": ["console"],
+            "level": "INFO",
+            "propagate": False,
+        },
+
+        # Development server
+        "django.server": {
+            "handlers": ["console"],
+            "level": "INFO",
+            "propagate": False,
+        },
+
+        # Application logs from accounts, files, storage, etc.
+        "cloud_storage": {
+            "handlers": ["console"],
+            "level": "INFO",
+            "propagate": False,
+        },
+        "cloud_storage.request": {
+            "handlers": ["console"],
+            "level": "INFO",
+            "propagate": False,
+        },
+        "": {
+            "handlers": ["console"],
+            "level": "INFO",
+        },
+    },
+}

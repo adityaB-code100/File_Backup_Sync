@@ -1,6 +1,9 @@
 import io
+import logging
 from pathlib import Path
 from datetime import datetime
+
+logger = logging.getLogger(__name__)
 from bson import ObjectId
 from django.conf import settings
 from django.http import StreamingHttpResponse, Http404
@@ -87,6 +90,13 @@ class FileListCreateView(APIView):
         user = request.user
         name = request.data.get('name')
         parent_id = request.data.get('parent_id')
+        operation_id = request.data.get('operation_id') or request.headers.get('X-Operation-ID')
+
+        # Idempotency check: if an operation with this ID was already processed, return the existing file
+        if operation_id:
+            existing_op_file = File.objects(owner=user, last_operation_id=operation_id, deleted=False).first()
+            if existing_op_file:
+                return Response(existing_op_file.to_dict(), status=status.HTTP_200_OK)
 
         try:
             parent_folder = resolve_parent_folder(parent_id, user)
@@ -105,7 +115,8 @@ class FileListCreateView(APIView):
                 owner=user,
                 parent_folder=parent_folder,
                 created_at=datetime.utcnow(),
-                updated_at=datetime.utcnow()
+                updated_at=datetime.utcnow(),
+                last_operation_id=operation_id
             )
             file_record.save()
             return Response(file_record.to_dict(), status=status.HTTP_201_CREATED)
@@ -158,7 +169,8 @@ class FileListCreateView(APIView):
             owner=user,
             parent_folder=parent_folder,
             created_at=datetime.utcnow(),
-            updated_at=datetime.utcnow()
+            updated_at=datetime.utcnow(),
+            last_operation_id=operation_id
         )
         file_record.save()
 
@@ -178,6 +190,24 @@ class FileListCreateView(APIView):
 
         file_record.current_version = ver_record
         file_record.save()
+
+        # Trigger secondary encrypted backup replication
+        try:
+            from storage.backup_service import replicate_blob
+            replicate_blob(
+                source_blob_path=final_dest,
+                content_hash=content_hash,
+                metadata={
+                    "file_id": str(file_record.id),
+                    "version_number": ver_record.version_number,
+                    "wrapped_dek": wrapped_dek,
+                    "dek_iv": dek_iv,
+                    "iv": file_iv,
+                    "size_bytes": size_bytes
+                }
+            )
+        except Exception as e:
+            logger.warning(f"[backup] Secondary replication failed: {e}")
 
         return Response(file_record.to_dict(), status=status.HTTP_201_CREATED)
 
@@ -322,7 +352,13 @@ class FileContentView(APIView):
             if int(expected_version) != current_version:
                 return Response({"error": "Version conflict", "code": "CONFLICT"}, status=status.HTTP_409_CONFLICT)
 
-        file_obj = request.FILES.get('file') or request.body
+        file_obj = request.FILES.get('file')
+        if not file_obj:
+            try:
+                file_obj = request.body
+            except Exception:
+                file_obj = None
+
         if not file_obj:
             return Response({"error": "No file content provided.", "code": "VALIDATION_ERROR"}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -382,5 +418,23 @@ class FileContentView(APIView):
         if operation_id:
             file_record.last_operation_id = operation_id
         file_record.save()
+
+        # Trigger secondary encrypted backup replication for new version
+        try:
+            from storage.backup_service import replicate_blob
+            replicate_blob(
+                source_blob_path=final_dest,
+                content_hash=content_hash,
+                metadata={
+                    "file_id": str(file_record.id),
+                    "version_number": ver_record.version_number,
+                    "wrapped_dek": wrapped_dek,
+                    "dek_iv": dek_iv,
+                    "iv": file_iv,
+                    "size_bytes": size_bytes
+                }
+            )
+        except Exception as e:
+            logger.warning(f"[backup] Secondary replication failed: {e}")
 
         return Response(file_record.to_dict(), status=status.HTTP_200_OK)

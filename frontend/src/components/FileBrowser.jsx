@@ -77,6 +77,7 @@ const FileBrowser = ({ searchQuery, viewMode, onRefreshStorage }) => {
       if (currentFolderId && currentFolderId !== 'root') {
         formData.append('parent_id', currentFolderId);
       }
+      formData.append('operation_id', crypto.randomUUID());
 
       try {
         await api.post('/files/', formData, {
