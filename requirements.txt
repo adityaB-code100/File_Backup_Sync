@@ -1,6 +1,20 @@
-watchdog==4.0.1
-google-api-python-client==2.140.0
-google-auth-httplib2==0.2.0
-google-auth-oauthlib==1.2.1
-tenacity==8.5.0
-pymongo==4.8.0
+# Backend dependencies
+django>=5.0
+djangorestframework>=3.14.0
+djangorestframework-simplejwt>=5.3.0
+mongoengine>=0.28.0
+pymongo>=4.8.0
+cryptography>=42.0.0
+argon2-cffi>=23.1.0
+django-cors-headers>=4.3.0
+python-dotenv>=1.0.0
+python-dateutil>=2.8.2
+gunicorn>=21.2.0
+pytest>=8.0.0
+pytest-django>=4.8.0
+
+# Desktop Sync Client dependencies
+watchdog>=4.0.0
+requests>=2.31.0
+tenacity>=8.2.0
+PyJWT>=2.8.0
